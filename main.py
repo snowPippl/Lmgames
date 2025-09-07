@@ -5,7 +5,7 @@ import pymysql
 from pymysql.cursors import DictCursor
 import re
 
-@register("lmgames", "author", "测试端插件")
+@register("lmgamse", "author", "测试插件", "1.0.0", "repo url")
 
 class DatabasePlugin:
     def __init__(self, config):
