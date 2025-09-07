@@ -4,25 +4,33 @@ from astrbot.api import logger
 import pymysql
 from pymysql.cursors import DictCursor
 import re
-
+# 尝试导入 AstrBot 的注册函数和过滤器
 @register("lmgamse", "author", "测试插件", "1.0.0", "repo url")
-
-class DatabasePlugin:
-    def __init__(self, config):
+class LMGamesPlugin:
+    def __init__(self, bot, config):
         """
-        初始化数据库连接
-        config: 包含数据库连接信息的字典
+        初始化插件
         """
+        self.bot = bot
+        self.config = config
+        
+        # 数据库配置
         self.db_config = {
-            'host': config.get('host', 'localhost'),
-            'port': config.get('port', 3306),
-            'user': config.get('user', 'root'),
-            'password': config.get('password', ''),
-            'db': config.get('database', ''),
+            'host': config.get('db_host', 'localhost'),
+            'port': config.get('db_port', 3306),
+            'user': config.get('db_user', 'root'),
+            'password': config.get('db_password', ''),
+            'db': config.get('db_name', ''),
             'charset': 'utf8mb4',
             'cursorclass': DictCursor
         }
+        
+        # 连接数据库
+        self.connection = None
         self.connect()
+        
+        # 注册命令
+        self.register_commands()
 
     def connect(self):
         """建立数据库连接"""
@@ -31,10 +39,15 @@ class DatabasePlugin:
             print("数据库连接成功")
         except Exception as e:
             print(f"数据库连接失败: {e}")
-            raise
+            self.connection = None
 
     def execute_query(self, query, params=None, fetch_one=False):
         """执行SQL查询"""
+        if not self.connection:
+            self.connect()
+            if not self.connection:
+                return None
+                
         try:
             with self.connection.cursor() as cursor:
                 cursor.execute(query, params)
@@ -46,11 +59,17 @@ class DatabasePlugin:
                 return result
         except Exception as e:
             print(f"查询执行失败: {e}")
-            self.connection.rollback()
+            if self.connection:
+                self.connection.rollback()
             return None
 
     def execute_update(self, query, params=None):
         """执行SQL更新操作"""
+        if not self.connection:
+            self.connect()
+            if not self.connection:
+                return None
+                
         try:
             with self.connection.cursor() as cursor:
                 result = cursor.execute(query, params)
@@ -58,7 +77,8 @@ class DatabasePlugin:
                 return result
         except Exception as e:
             print(f"更新执行失败: {e}")
-            self.connection.rollback()
+            if self.connection:
+                self.connection.rollback()
             return None
 
     def extract_steamid(self, message):
@@ -67,7 +87,6 @@ class DatabasePlugin:
         假设消息格式为: "绑定 STEAM_ID"
         """
         # 使用正则表达式提取可能的SteamID
-        # SteamID通常是一串数字，或者是STEAM_X:Y:Z格式
         patterns = [
             r'STEAM_[0-5]:[01]:\d+',  # STEAM_X:Y:Z格式
             r'7656119\d{10}',  # 64位SteamID
@@ -77,32 +96,37 @@ class DatabasePlugin:
         for pattern in patterns:
             match = re.search(pattern, message, re.IGNORECASE)
             if match:
-                # 如果是最后一个模式，返回捕获组
                 if pattern == r'绑定\s+(\S+)':
                     return match.group(1)
                 return match.group(0)
         
         return None
 
-    def bind_steamid(self, message, qq_number):
+    async def bind_steamid(self, event):
         """
         绑定SteamID到QQ号
         """
+        message = event.message
+        qq_number = str(event.sender.id)
+        
         # 从消息中提取steamid
         steamid = self.extract_steamid(message)
         if not steamid:
-            return "未找到有效的SteamID，请使用格式: 绑定 STEAM_ID"
+            await event.reply("未找到有效的SteamID，请使用格式: 绑定 STEAM_ID")
+            return
         
         # 检查steamid是否存在
         check_query = "SELECT * FROM robot WHERE steamId = %s"
         user_record = self.execute_query(check_query, (steamid,), fetch_one=True)
         
         if not user_record:
-            return "你还没有进入过游戏里,请进入游戏后再开户吧！"
+            await event.reply("你还没有进入过游戏里,请进入游戏后再开户吧！")
+            return
         
         # 检查是否已经绑定过
         if user_record.get('QQ'):
-            return "该SteamID已经绑定过QQ号了！"
+            await event.reply("该SteamID已经绑定过QQ号了！")
+            return
         
         # 更新QQ号
         update_query = "UPDATE robot SET QQ = %s WHERE steamId = %s"
@@ -123,18 +147,21 @@ class DatabasePlugin:
             self.execute_update(create_account, (steamid,))
             new_balance = 20000
         
-        return f"绑定成功！已奖励20000游戏币，当前余额: {new_balance}"
+        await event.reply(f"绑定成功！已奖励20000游戏币，当前余额: {new_balance}")
 
-    def daily_check_in(self, qq_number):
+    async def daily_check_in(self, event):
         """
         每日签到功能
         """
+        qq_number = str(event.sender.id)
+        
         # 通过QQ号获取steamId
         get_steamid_query = "SELECT steamId FROM robot WHERE QQ = %s"
         user_record = self.execute_query(get_steamid_query, (qq_number,), fetch_one=True)
         
         if not user_record:
-            return "请先绑定SteamID后再签到！"
+            await event.reply("请先绑定SteamID后再签到！")
+            return
         
         steamid = user_record['steamId']
         
@@ -156,63 +183,26 @@ class DatabasePlugin:
             self.execute_update(create_account, (steamid, reward))
             new_balance = reward
         
-        return f"签到成功！获得{reward}游戏币，当前余额: {new_balance}"
+        await event.reply(f"签到成功！获得{reward}游戏币，当前余额: {new_balance}")
+
+    def register_commands(self):
+        """使用 @filter.command 注册命令"""
+        # 绑定命令
+        @filter.command("绑定")
+        async def bind_handler(event):
+            await self.bind_steamid(event)
+
+        # 签到命令
+        @filter.command("签到")
+        async def checkin_handler(event):
+            await self.daily_check_in(event)
 
     def close(self):
         """关闭数据库连接"""
-        if hasattr(self, 'connection'):
+        if self.connection:
             self.connection.close()
 
-# 使用示例
-if __name__ == "__main__":
-    # 数据库配置
-    db_config = {
-        'host': 'localhost',
-        'port': 3306,
-        'user': 'your_username',
-        'password': 'your_password',
-        'database': 'your_database'
-    }
-    
-    # 创建插件实例
-    plugin = DatabasePlugin(db_config)
-    
-    try:
-        # 绑定SteamID示例
-        result = plugin.bind_steamid("绑定 STEAM_1:1:123456", "123456789")
-        print(result)
-        
-        # 签到示例
-        result = plugin.daily_check_in("123456789")
-        print(result)
-    finally:
-        # 关闭连接
-        plugin.close()
-from database_plugin import DatabasePlugin
-
-# 初始化插件
-db_config = {
-    'host': 'localhost',
-    'port': 3306,
-    'user': 'your_username',
-    'password': 'your_password',
-    'database': 'your_database'
-}
-
-db_plugin = DatabasePlugin(db_config)
-
-# 注册命令处理函数
-@filter.command("绑定")
-async def bind_steamid(event):
-    message = event.message
-    qq_number = event.sender.id  # 根据你的框架获取QQ号
-    
-    result = db_plugin.bind_steamid(message, qq_number)
-    await event.reply(result)
-
-@filter.command("签到")
-async def daily_check_in(event):
-    qq_number = event.sender.id  # 根据你的框架获取QQ号
-    
-    result = db_plugin.daily_check_in(qq_number)
-    await event.reply(result)
+# 插件加载时调用的函数
+def setup(bot, config):
+    plugin = LMGamesPlugin(bot, config)
+    return plugin
