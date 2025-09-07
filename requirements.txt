@@ -1,0 +1,6 @@
+# AstrBot MySQL 插件依赖
+pymysql >= 1.0.2
+
+# 如果需要支持更多数据库功能，可以添加以下可选依赖
+# SQLAlchemy >= 1.4.0
+# mysql-connector-python >= 8.0.0
